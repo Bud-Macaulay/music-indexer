@@ -1,3 +1,4 @@
+import re
 import acoustid
 import musicbrainzngs
 from pathlib import Path
@@ -21,6 +22,13 @@ collection = db[COLLECTION_NAME]
 
 # MusicBrainz requires a user agent
 musicbrainzngs.set_useragent("music-indexer", "1.0", "you@example.com")
+
+
+# We normalise strings to search across consistant fields.
+def normalise_string(value: str) -> str:
+    value = value.lower().strip()
+    value = re.sub(r"[^a-z0-9\s]", "", value)
+    return value
 
 
 # ==== MUSICBRAINZ ENRICHMENT ====
@@ -55,8 +63,11 @@ def fetch_musicbrainz_metadata(recording_id):
 
         return {
             "mb_artist": artist,
+            "mb_artist_lower": artist.lower() if artist else None,
             "genres": tags,
+            "genres_lower": [t.lower() for t in tags],
             "album": album,
+            "album_lower": album.lower() if album else None,
             "release_date": release_date,
         }
 
@@ -68,6 +79,10 @@ def fetch_musicbrainz_metadata(recording_id):
 # ==== PROCESS SINGLE FILE ====
 def process_file(file_path: Path):
     print(f"Processing {file_path.name}")
+
+    if collection.find_one({"music_file": str(file_path.resolve())}):
+        print(f"Skipping {file_path.name} (already indexed)")
+        return
 
     # ----- Audio metadata -----
     audio = MP3(file_path)
@@ -103,21 +118,23 @@ def process_file(file_path: Path):
         # Respect MB rate limiting (~1 request/sec recommended)
         time.sleep(1)
 
-    # Prefer MB artist if available
-    artist = mb_data.get("mb_artist") or artist
-
-    # ----- Build MongoDB document -----
-    if not music_id:
-        music_id = f"file:{file_path.stem}"
+    final_artist = mb_data.get("artist") or artist
+    final_genres = mb_data.get("genres", [])
 
     doc = {
-        "_id": music_id,
+        "_id": str(file_path.resolve()),
         "music_id": music_id,
         "music_file": str(file_path.resolve()),
         "title": title,
-        "artist": artist,
+        "title_lower": normalise_string(title),
+        "artist": final_artist,
+        "artist_lower": normalise_string(final_artist),
         "album": mb_data.get("album"),
-        "genres": mb_data.get("genres", []),
+        "album_lower": normalise_string(mb_data["album"])
+        if mb_data.get("album")
+        else None,
+        "genres": final_genres,
+        "genres_lower": [normalise_string(g) for g in final_genres],
         "release_date": mb_data.get("release_date"),
         "audio_features": {"duration_seconds": duration, "bitrate_kbps": bitrate},
         "sources": {"acoustid_score": acoustid_score, "musicbrainz_id": music_id},
@@ -126,8 +143,7 @@ def process_file(file_path: Path):
     }
 
     # ----- Upsert -----
-    collection.update_one({"music_file": doc["music_file"]}, {"$set": doc}, upsert=True)
-
+    collection.update_one({"_id": str(file_path.resolve())}, {"$set": doc}, upsert=True)
     print(f"Indexed {file_path.name}")
 
 
