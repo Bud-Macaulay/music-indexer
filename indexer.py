@@ -7,6 +7,12 @@ from mutagen.mp3 import MP3
 from pymongo import MongoClient
 import time
 
+from mutagen.easyid3 import EasyID3
+from mutagen.id3 import ID3, APIC, error
+import os
+import time
+
+
 # ==== CONFIG ====
 DOWNLOAD_DIR = Path("../music-miner/downloads")
 ACOUSTID_API_KEY = "d2VmByYshF"
@@ -29,6 +35,48 @@ def normalise_string(value: str) -> str:
     value = value.lower().strip()
     value = re.sub(r"[^a-z0-9\s]", "", value)
     return value
+
+
+def is_file_stable(path: Path, wait_seconds=5):
+    initial_size = path.stat().st_size
+    time.sleep(wait_seconds)
+    return path.stat().st_size == initial_size
+
+
+def write_id3_tags(
+    file_path: Path,
+    title: str,
+    artist: str,
+    album: str,
+    genres: list,
+    release_date: str,
+):
+    try:
+        try:
+            audio = EasyID3(file_path)
+        except error:
+            audio = MP3(file_path)
+            audio.add_tags()
+            audio.save()
+            audio = EasyID3(file_path)
+
+        audio["title"] = title
+        audio["artist"] = artist
+
+        if album:
+            audio["album"] = album
+
+        if genres:
+            audio["genre"] = genres
+
+        if release_date:
+            audio["date"] = release_date
+
+        audio.save()
+        print(f"Updated ID3 tags for {file_path.name}")
+
+    except Exception as e:
+        print(f"Failed writing tags for {file_path.name}: {e}")
 
 
 # ==== MUSICBRAINZ ENRICHMENT ====
@@ -84,6 +132,10 @@ def process_file(file_path: Path):
         print(f"Skipping {file_path.name} (already indexed)")
         return
 
+    if not is_file_stable(file_path):
+        print(f"Skipping {file_path.name} (still being written)")
+        return
+
     # ----- Audio metadata -----
     audio = MP3(file_path)
     duration = int(audio.info.length)
@@ -118,8 +170,17 @@ def process_file(file_path: Path):
         # Respect MB rate limiting (~1 request/sec recommended)
         time.sleep(1)
 
-    final_artist = mb_data.get("artist") or artist
+    final_artist = mb_data.get("mb_artist") or artist
     final_genres = mb_data.get("genres", [])
+
+    write_id3_tags(
+        file_path=file_path,
+        title=title,
+        artist=final_artist,
+        album=mb_data.get("album"),
+        genres=final_genres,
+        release_date=mb_data.get("release_date"),
+    )
 
     doc = {
         "_id": str(file_path.resolve()),
