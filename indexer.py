@@ -182,6 +182,11 @@ def process_file(file_path: Path):
         release_date=mb_data.get("release_date"),
     )
 
+    if music_id:
+        if collection.find_one({"music_id": music_id}):
+            print(f"Skipping {file_path.name} (already indexed via fingerprint)")
+            return
+
     doc = {
         "_id": str(file_path.resolve()),
         "music_id": music_id,
