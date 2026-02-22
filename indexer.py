@@ -14,10 +14,10 @@ import time
 
 
 # ==== CONFIG ====
-DOWNLOAD_DIR = Path("../music-miner/downloads")
+DOWNLOAD_DIR = Path("/downloads")
 ACOUSTID_API_KEY = "d2VmByYshF"
 
-MONGO_URI = "mongodb://localhost:27017/"
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb://music-server:27017/musicdb")
 DB_NAME = "musicdb"
 COLLECTION_NAME = "tracks"
 
@@ -80,48 +80,46 @@ def write_id3_tags(
 
 
 # ==== MUSICBRAINZ ENRICHMENT ====
-def fetch_musicbrainz_metadata(recording_id):
-    try:
-        result = musicbrainzngs.get_recording_by_id(
-            recording_id, includes=["artists", "releases", "tags"]
-        )
-
-        rec = result.get("recording", {})
-
-        # ----- Genres / tags -----
-        tags = [tag["name"] for tag in rec.get("tag-list", [])]
-
-        # ----- Artist -----
-        artist = None
-        artists = rec.get("artist-credit", [])
-        if artists:
-            artist = "".join(
-                a["artist"]["name"] + a.get("joinphrase", "")
-                for a in artists
-                if isinstance(a, dict)
+def fetch_musicbrainz_metadata(recording_id, retries=3, delay=2):
+    for attempt in range(retries):
+        try:
+            result = musicbrainzngs.get_recording_by_id(
+                recording_id, includes=["artists", "releases", "tags"]
             )
+            rec = result.get("recording", {})
 
-        # ----- Album / Release -----
-        releases = rec.get("release-list", [])
-        album = releases[0]["title"] if releases else None
+            tags = [tag["name"] for tag in rec.get("tag-list", [])]
 
-        release_date = None
-        if releases and "date" in releases[0]:
-            release_date = releases[0]["date"]
+            artist = None
+            artists = rec.get("artist-credit", [])
+            if artists:
+                artist = "".join(
+                    a["artist"]["name"] + a.get("joinphrase", "")
+                    for a in artists
+                    if isinstance(a, dict)
+                )
 
-        return {
-            "mb_artist": artist,
-            "mb_artist_lower": artist.lower() if artist else None,
-            "genres": tags,
-            "genres_lower": [t.lower() for t in tags],
-            "album": album,
-            "album_lower": album.lower() if album else None,
-            "release_date": release_date,
-        }
+            releases = rec.get("release-list", [])
+            album = releases[0]["title"] if releases else None
 
-    except Exception as e:
-        print("MusicBrainz lookup failed:", e)
-        return {}
+            release_date = None
+            if releases and "date" in releases[0]:
+                release_date = releases[0]["date"]
+
+            return {
+                "mb_artist": artist,
+                "mb_artist_lower": artist.lower() if artist else None,
+                "genres": tags,
+                "genres_lower": [t.lower() for t in tags],
+                "album": album,
+                "album_lower": album.lower() if album else None,
+                "release_date": release_date,
+            }
+
+        except Exception as e:
+            print(f"MusicBrainz lookup failed (attempt {attempt + 1}): {e}")
+            time.sleep(delay)
+    return {}
 
 
 # ==== PROCESS SINGLE FILE ====

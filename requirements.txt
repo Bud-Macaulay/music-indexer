@@ -2,5 +2,4 @@ pyacoustid
 musicbrainzngs
 pymongo
 mutagen
-musicbrainzngs
 ruff
